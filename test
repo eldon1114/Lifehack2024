@@ -1,0 +1,77 @@
+import requests
+from bs4 import BeautifulSoup
+
+def fetch_article_content(url):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        paragraphs = soup.find_all('p')
+        content = ' '.join([para.get_text() for para in paragraphs])
+        return content
+    except requests.exceptions.RequestException as e:
+        print(f"An error occurred: {e}")
+        return ""
+
+import re
+import nltk
+from nltk.corpus import stopwords
+
+stop_words = set(stopwords.words('english'))
+
+def preprocess_text(text):
+    text = re.sub(r'<.*?>', '', text)  # Remove HTML tags
+    text = text.lower()  # Normalize text to lowercase
+    text = re.sub(r'[^\w\s]', '', text)  # Remove punctuation
+    tokens = nltk.word_tokenize(text)  # Tokenize text
+    tokens = [word for word in tokens if word not in stop_words]  # Remove stopwords
+    return tokens
+
+import spacy
+
+nlp = spacy.load('en_core_web_sm')
+
+def extract_entities(text):
+    doc = nlp(text)
+    entities = {"PERSON": [], "ORG": [], "GPE": [], "EVENT": []}
+    for ent in doc.ents:
+        if ent.label_ in entities:
+            entities[ent.label_].append(ent.text)
+    return entities
+
+
+from py2neo import Graph, Node, Relationship
+
+graph = Graph("bolt://localhost:7687", auth=("neo4j", "password"))
+
+def add_to_knowledge_graph(entities):
+    for entity_type, names in entities.items():
+        for name in names:
+            node = Node(entity_type, name=name)
+            graph.merge(node, entity_type, "name")
+            # Add relationships between nodes as needed
+
+from rasa_sdk import Action, Tracker
+from rasa_sdk.executor import CollectingDispatcher
+from py2neo import Graph
+
+graph = Graph("bolt://localhost:7687", auth=("neo4j", "password"))
+
+class ActionQueryKnowledgeGraph(Action):
+    def name(self) -> str:
+        return "action_query_knowledge_graph"
+
+    def run(self, dispatcher: CollectingDispatcher,
+            tracker: Tracker,
+            domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+
+        query = tracker.latest_message.get('text')
+        result = graph.run("MATCH (n) WHERE n.name CONTAINS $name RETURN n", name=query).data()
+        
+        if result:
+            response = "I found the following entities: " + ', '.join([res['n']['name'] for res in result])
+        else:
+            response = "I couldn't find any information related to your query."
+
+        dispatcher.utter_message(text=response)
+        return []
